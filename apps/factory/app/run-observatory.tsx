@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import {
   startTransition,
   useEffect,
@@ -8,12 +9,19 @@ import {
   useState
 } from "react";
 
+import { isSandboxSSHable, sandboxSshCommand } from "../agent/lib/sandbox-ssh";
 import type {
   AgentRunRecord,
   ControlPlaneSnapshot,
   SandboxResource
 } from "../agent/lib/run-types";
+import { CopyCommand } from "../components/copy-command";
 import { Button } from "../components/ui/button";
+
+const SandboxTerminal = dynamic(
+  () => import("./sandbox-terminal").then((mod) => mod.SandboxTerminal),
+  { ssr: false }
+);
 
 const AGENT_RUNS_URL =
   "https://vercel.com/vercel-internal-apps/turborepo-eve-agent/observability/agent-runs";
@@ -60,8 +68,16 @@ function duration(run: AgentRunRecord): string {
   return `${Math.round(milliseconds / 60_000)}m`;
 }
 
-function RunTicket({ run }: { readonly run: AgentRunRecord }) {
+function RunTicket({
+  run,
+  onTerminal
+}: {
+  readonly run: AgentRunRecord;
+  readonly onTerminal: (name: string) => void;
+}) {
   const detailsUrl = run.source === "eve" ? AGENT_RUNS_URL : WORKFLOW_RUNS_URL;
+  const sandbox = run.sandbox;
+  const sshable = sandbox ? isSandboxSSHable(sandbox.status) : false;
   return (
     <li className={`runTicket runTicket-${run.status}`}>
       <article aria-label={`${run.title}, ${run.status}`}>
@@ -104,6 +120,29 @@ function RunTicket({ run }: { readonly run: AgentRunRecord }) {
           <span aria-hidden="true">→</span>
           <span>{run.sandbox?.status ?? run.status}</span>
         </div>
+        {sandbox ? (
+          <>
+            <CopyCommand
+              command={sandboxSshCommand(sandbox.id)}
+              label="SSH command for this sandbox"
+            />
+            <Button
+              className="sandboxTerminalButton"
+              disabled={!sshable}
+              onClick={() => onTerminal(sandbox.id)}
+              size="sm"
+              title={
+                sshable
+                  ? "Open a terminal session for this sandbox"
+                  : "This sandbox is not currently reachable for a terminal session"
+              }
+              type="button"
+              variant="outline"
+            >
+              Terminal
+            </Button>
+          </>
+        ) : null}
         <a
           className="runDetails"
           href={detailsUrl}
@@ -118,7 +157,13 @@ function RunTicket({ run }: { readonly run: AgentRunRecord }) {
   );
 }
 
-function SandboxCard({ sandbox }: { readonly sandbox: SandboxResource }) {
+function SandboxCard({
+  sandbox,
+  onTerminal
+}: {
+  readonly sandbox: SandboxResource;
+  readonly onTerminal: (name: string) => void;
+}) {
   return (
     <li className="sandboxCard">
       <div>
@@ -142,6 +187,25 @@ function SandboxCard({ sandbox }: { readonly sandbox: SandboxResource }) {
           <dd>{sandbox.region ?? "automatic"}</dd>
         </div>
       </dl>
+      <CopyCommand
+        command={sandboxSshCommand(sandbox.name)}
+        label="SSH command for this sandbox"
+      />
+      <Button
+        className="sandboxTerminalButton"
+        disabled={!isSandboxSSHable(sandbox.status)}
+        onClick={() => onTerminal(sandbox.name)}
+        size="sm"
+        title={
+          isSandboxSSHable(sandbox.status)
+            ? "Open a terminal session for this sandbox"
+            : "This sandbox is not currently reachable for a terminal session"
+        }
+        type="button"
+        variant="outline"
+      >
+        Terminal
+      </Button>
     </li>
   );
 }
@@ -154,6 +218,7 @@ export function RunObservatory({
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [trigger, setTrigger] = useState("all");
   const [refreshing, setRefreshing] = useState(false);
+  const [activeTerminal, setActiveTerminal] = useState<string | null>(null);
   const refreshController = useRef<AbortController | null>(null);
 
   async function refresh() {
@@ -269,7 +334,11 @@ export function RunObservatory({
                 {runs.length > 0 ? (
                   <ol className="runList">
                     {runs.map((run) => (
-                      <RunTicket key={run.id} run={run} />
+                      <RunTicket
+                        key={run.id}
+                        run={run}
+                        onTerminal={setActiveTerminal}
+                      />
                     ))}
                   </ol>
                 ) : (
@@ -292,12 +361,22 @@ export function RunObservatory({
       ) : snapshot.sandboxes.length > 0 ? (
         <ul className="sandboxGrid">
           {snapshot.sandboxes.slice(0, 8).map((sandbox) => (
-            <SandboxCard key={sandbox.name} sandbox={sandbox} />
+            <SandboxCard
+              key={sandbox.name}
+              sandbox={sandbox}
+              onTerminal={setActiveTerminal}
+            />
           ))}
         </ul>
       ) : (
         <p className="emptySandboxes">No named sandbox resources are active.</p>
       )}
+      {activeTerminal ? (
+        <SandboxTerminal
+          sandboxName={activeTerminal}
+          onExit={() => setActiveTerminal(null)}
+        />
+      ) : null}
     </section>
   );
 }
